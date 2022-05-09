@@ -65,6 +65,96 @@ impl<'a> Statistics<'a> {
         indexes.push(index);
     }
 
+    pub(super) fn into_schema(self, warnings: &mut Vec<Warning>) -> PrismaSchema<'static> {
+        use schema_renderer::*;
+
+        let mut schema = PrismaSchema::default();
+        let mut indices = self.indices;
+
+        let mut added_models: HashMap<String, ModelId> = HashSet::new();
+        let mut added_types: HashMap<String, CompositeTypeId> = HashSet::new();
+
+        let mut unsupported = Vec::new();
+        let mut unknown_types = Vec::new();
+        let mut undecided_types = Vec::new();
+        let mut fields_with_empty_names = Vec::new();
+
+        for ((container, field_name), sampler) in self.samples.into_iter() {
+            let doc_count = *samples.get(&container).unwrap_or(&0);
+            let field_count = sampler.counter;
+
+            let percentages = sampler.percentages();
+            let most_common_type = percentages.find_most_common();
+
+            let field_type = match &most_common_type {
+                Some(field_type) if !percentages.has_type_variety() => field_type.to_owned(),
+                Some(_) if percentages.all_types_are_datetimes() => FieldType::Timestamp,
+                _ => FieldType::Json,
+            };
+
+            if let FieldType::Unsupported(r#type) = field_type {
+                unsupported.push((container.clone(), field_name.to_string(), r#type));
+            }
+
+            if percentages.data.len() > 1 {
+                undecided_types.push((container.clone(), field_name.to_string(), field_type.to_string()));
+            }
+
+            if field_name.is_empty() {
+                fields_with_empty_names.push((container.clone(), field_name.clone()));
+            }
+
+            let mut field = ScalarField::new(field_name, ScalarFieldType::from(field_type));
+            field.set_array(field_type.is_array);
+            field.set_optional(sampler.nullable || doc_count > field_count);
+
+            if percentages.has_type_variety() {
+                let doc = format!(
+                    "Multiple data types found: {} out of {} sampled entries",
+                    percentages, field_count
+                );
+
+                field.push_docs(doc);
+            }
+
+            if most_common_type.is_none() {
+                let doc = "Could not determine type: the field only had null or empty values in the sample set.";
+                field.push_docs(doc);
+
+                unknown_types.push((container.clone(), field_name.to_string()));
+            }
+
+            match container {
+                Name::Model(name) => {
+                    let model_id = added_models
+                        .entry(name.clone())
+                        .or_insert_with(|| schema.push_model(Model::new(name)));
+
+                    let is_id = field.name() == "_id";
+
+                    if matches!(&field_type, FieldType::ObjectId) && is_id {
+                        field.set_default_value("auto()");
+                    }
+
+                    if field.name() == "id" && field.database_name().is_none() {
+                        field.set_name("id_");
+                        field.set_database_name("id");
+                    }
+
+                    let field_id = schema.push_model_field(*model_id, field);
+
+                    if is_id {
+                        let model = &mut schema[*model_id];
+                        model.set_primary_key(vec![field_id]);
+                    }
+                }
+                Name::CompositeType(_) => todo!(),
+            }
+        }
+
+        schema
+    }
+
     /// From the given data, create a Prisma data model with best effort basis.
     pub(super) fn into_datamodel(self, warnings: &mut Vec<Warning>) -> Datamodel {
         let mut data_model = Datamodel::new();

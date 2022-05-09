@@ -137,3 +137,35 @@ impl From<FieldType> for dml::FieldType {
         }
     }
 }
+
+impl From<FieldType> for schema_renderer::ScalarFieldType<'static> {
+    fn from(r#type: FieldType) -> Self {
+        use schema_renderer::{PrismaType, ScalarFieldType};
+
+        match r#type {
+            FieldType::String => ScalarFieldType::new(PrismaType::String),
+            FieldType::Double => ScalarFieldType::new(PrismaType::Float),
+            FieldType::BinData => ScalarFieldType::new(PrismaType::Bytes),
+            FieldType::ObjectId => {
+                let mut r#type = ScalarFieldType::new(PrismaType::String);
+                r#type.native_type("ObjectId");
+
+                r#type;
+            }
+            FieldType::Bool => ScalarFieldType::new(PrismaType::Boolean),
+            FieldType::Date => {
+                let mut r#type = ScalarFieldType::new(PrismaType::DateTime);
+                r#type.native_type("Date");
+
+                r#type;
+            }
+            FieldType::Int32 => ScalarFieldType::new(PrismaType::Int),
+            FieldType::Int64 => ScalarFieldType::new(PrismaType::BigInt),
+            FieldType::Timestamp => ScalarFieldType::new(PrismaType::DateTime),
+            FieldType::Json => ScalarFieldType::new(PrismaType::Json),
+            FieldType::Document(name) => ScalarFieldType::new(PrismaType::composite(name)),
+            FieldType::Array(r#type) => ScalarFieldType::from(r#type),
+            FieldType::Unsupported(name) => ScalarFieldType::new(PrismaType::unsupported(name)),
+        }
+    }
+}
